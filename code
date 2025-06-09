@@ -1,0 +1,154 @@
+#include <Wire.h>
+#include <U8glib.h>
+
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NO_ACK);
+
+const int HALL_SENSOR_PIN = A0;
+const int THRESHOLD = 520;  
+
+const float WHEEL_DIAMETER = 0.66;
+const float WHEEL_CIRCUMFERENCE = WHEEL_DIAMETER * PI;
+
+volatile unsigned long lastMagnetTime = 0;
+volatile unsigned long currentMagnetTime = 0;
+volatile unsigned long revolutions = 0;
+unsigned long startTime = 0;
+unsigned long tripTime = 0;
+
+unsigned long lastDisplayUpdate = 0;
+const unsigned long DISPLAY_INTERVAL = 1000;
+const unsigned long TIMEOUT = 3000;
+
+bool lastMagnetState = false;
+unsigned long lastDebounceTime = 0;
+const unsigned long DEBOUNCE_DELAY = 50;
+
+float speed_kmh = 0.0;
+
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(HALL_SENSOR_PIN, INPUT);
+  
+  // Initialize display
+  Serial.println("Initializing OLED...");
+  
+  // Display startup message
+  Serial.println("Showing startup message...");
+  do {
+    u8g.firstPage();
+    do {
+      u8g.setFont(u8g_font_6x10);
+      u8g.drawStr(0, 10, "Bike Speedometer");
+      u8g.drawStr(0, 25, "----------------");
+      u8g.drawStr(0, 40, "Place magnet on wheel");
+      u8g.drawStr(0, 55, "and rotate to begin");
+    } while(u8g.nextPage());
+  } while(0);
+  
+  Serial.println("Startup complete!");
+  delay(2000);
+  
+  startTime = millis();
+  
+  // Print header for Serial Plotter
+  Serial.println("SensorValue,Threshold,Speed_kmh,Distance_km,MagnetDetected");
+}
+
+void loop() {
+  int sensorValue = analogRead(HALL_SENSOR_PIN);
+  
+  bool magnetDetected = (sensorValue < THRESHOLD);
+  
+  if (magnetDetected != lastMagnetState) {
+    lastDebounceTime = millis();
+  }
+  
+  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (magnetDetected && !lastMagnetState) {
+      lastMagnetTime = currentMagnetTime;
+      currentMagnetTime = millis();
+      
+      revolutions++;
+      
+      if (lastMagnetTime > 0) {
+        unsigned long revolutionTime = currentMagnetTime - lastMagnetTime;
+        if (revolutionTime > 0) {
+          speed_kmh = (WHEEL_CIRCUMFERENCE * 3600.0) / revolutionTime;
+        }
+      }
+    }
+  }
+  
+  lastMagnetState = magnetDetected;
+  
+  tripTime = millis() - startTime;
+  
+  if (millis() - currentMagnetTime > TIMEOUT) {
+    speed_kmh = 0;
+  }
+  
+  // Update serial data more frequently for better debugging
+  float distance_km = (revolutions * WHEEL_CIRCUMFERENCE) / 1000.0;
+  updateSerial(speed_kmh, distance_km, sensorValue, magnetDetected);
+  
+  if (millis() - lastDisplayUpdate >= DISPLAY_INTERVAL) {
+    updateDisplay(speed_kmh, distance_km);
+    lastDisplayUpdate = millis();
+  }
+  
+  // Small delay to avoid flooding the serial port
+  delay(200);
+}
+
+void updateDisplay(float speed_kmh, float distance_km) {
+  Serial.println("Updating display..."); 
+  
+  unsigned long tripSeconds = tripTime / 1000;
+  unsigned long tripMinutes = tripSeconds / 60;
+  tripSeconds %= 60;
+  
+  char buffer[20];
+  
+  u8g.firstPage();
+  do {
+    // Speed - large font
+    u8g.setFont(u8g_font_osb21);
+    dtostrf(speed_kmh, 2, 1, buffer);
+    u8g.drawStr(5, 24, buffer);
+    
+    u8g.setFont(u8g_font_6x10);
+    u8g.drawStr(75, 24, "km/h");
+    
+    // Distance
+    u8g.setFont(u8g_font_6x12);
+    u8g.drawStr(5, 40, "Distance:");
+    dtostrf(distance_km, 4, 2, buffer);
+    u8g.drawStr(65, 40, buffer);
+    u8g.drawStr(105, 40, "km");
+    
+    // Time
+    u8g.setFont(u8g_font_6x10);
+    sprintf(buffer, "Time: %lu:%02lu min", tripMinutes, tripSeconds);
+    u8g.drawStr(5, 55, buffer);
+    
+    // Revolutions
+    sprintf(buffer, "Rev: %lu", revolutions);
+    u8g.drawStr(5, 64, buffer);
+    
+  } while(u8g.nextPage());
+  
+  Serial.println("Display updated!"); // Debug message
+}
+
+void updateSerial(float speed_kmh, float distance_km, int sensorValue, bool magnetDetected) {
+  Serial.print(sensorValue);
+  Serial.print(",");
+  Serial.print(THRESHOLD);
+  Serial.print(",");
+  Serial.print(speed_kmh);
+  Serial.print(",");
+  Serial.print(distance_km * 100); 
+  Serial.print(",");
+  Serial.println(magnetDetected ? 1000 : 0);
+}
